@@ -13,6 +13,11 @@
     position: relative; width: 100%; height: 100%;
     display: flex; align-items: center; justify-content: center;
   }
+  /* Sized to exactly the canvas's own footprint (everything else in here is
+     absolutely positioned, so it doesn't add to this box's size), so UI anchored
+     to its edges -- like the touch controls -- lock to the true edges of the
+     maze screen instead of the full browser viewport. */
+  #viewWrap { position: relative; width: 800px; height: 500px; }
   canvas { display: block; background: #000; }
   #view { image-rendering: pixelated; }
   #hud {
@@ -52,22 +57,27 @@
     white-space: nowrap; z-index: 5;
   }
 
-  /* On-screen touch controls: hidden by default, shown on touch devices. */
+  /* On-screen touch controls: always visible (also usable with a mouse), locked to
+     the bottom edge of the maze screen itself (#viewWrap), laid out as a classic
+     plus-shaped D-pad: up/down/left/right around an empty center cell. */
   #touchControls {
-    display: none;
+    display: block;
     position: absolute; inset: 0; z-index: 6; pointer-events: none;
   }
-  @media (pointer: coarse) {
-    #touchControls { display: block; }
-  }
-  .touchGroup {
-    position: absolute; bottom: 18px; display: flex; gap: 10px;
+  #touchDpad {
+    position: absolute; bottom: 14px; right: 14px;
+    display: grid;
+    grid-template-columns: 56px 56px 56px;
+    grid-template-rows: 56px 56px 56px;
+    gap: 4px;
     pointer-events: auto;
   }
-  #touchMove { left: 18px; flex-direction: column; }
-  #touchTurn { right: 18px; }
+  #btnUp { grid-area: 1 / 2 / 2 / 3; }
+  #btnLeft { grid-area: 2 / 1 / 3 / 2; }
+  #btnRight { grid-area: 2 / 3 / 3 / 4; }
+  #btnDown { grid-area: 3 / 2 / 4 / 3; }
   .touchBtn {
-    width: 60px; height: 60px; border-radius: 50%;
+    width: 56px; height: 56px; border-radius: 10px;
     background: rgba(20,40,25,0.55); border: 1px solid rgba(159,255,176,0.6);
     color: #cfffd8; font-size: 22px; line-height: 1;
     display: flex; align-items: center; justify-content: center;
@@ -78,6 +88,7 @@
 </head>
 <body>
 <div id="wrap">
+<div id="viewWrap">
   <canvas id="view" width="800" height="500"></canvas>
   <canvas id="minimap" width="180" height="180"></canvas>
   <div id="hud">
@@ -87,16 +98,14 @@
   </div>
   <div id="message"></div>
   <div id="touchControls">
-    <div id="touchMove" class="touchGroup">
+    <div id="touchDpad">
       <button type="button" class="touchBtn" id="btnUp" aria-label="Forward">&#9650;</button>
-      <button type="button" class="touchBtn" id="btnDown" aria-label="Back">&#9660;</button>
-    </div>
-    <div id="touchTurn" class="touchGroup">
       <button type="button" class="touchBtn" id="btnLeft" aria-label="Turn left">&#9664;</button>
       <button type="button" class="touchBtn" id="btnRight" aria-label="Turn right">&#9654;</button>
+      <button type="button" class="touchBtn" id="btnDown" aria-label="Back">&#9660;</button>
     </div>
   </div>
-  <div id="footer">WASD / Arrows to move &amp; turn &middot; M toggles map &middot; R new maze &middot; avoid the rat!</div>
+  <div id="footer">WASD / Arrows to move &amp; turn &middot; M toggles map &middot; T toggles touch controls &middot; R new maze &middot; avoid the rat!</div>
   <div id="overlay">
     <h1>3D MAZE</h1>
     <p>Find your way through the brick corridors to the glowing exit &mdash; but watch out for
@@ -106,6 +115,7 @@
     <p>W / &uarr; forward &nbsp; S / &darr; back &nbsp; A / &larr; turn left &nbsp; D / &rarr; turn right &nbsp; M minimap</p>
     <button id="startBtn">Enter the Maze</button>
   </div>
+</div>
 </div>
 
 <script>
@@ -382,13 +392,34 @@
 
   // ---------- Input ----------
   const keys = {};
+  let showTouchControls = true;
+  const touchControlsEl = document.getElementById('touchControls');
   window.addEventListener('keydown', (e) => {
     keys[e.key.toLowerCase()] = true;
     if (e.key.toLowerCase() === 'm') showMap = !showMap;
     if (e.key.toLowerCase() === 'r') newMaze();
+    if (e.key.toLowerCase() === 't') {
+      showTouchControls = !showTouchControls;
+      touchControlsEl.classList.toggle('hidden', !showTouchControls);
+    }
     if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+  // ---------- Responsive scaling ----------
+  // #viewWrap (the canvas plus every overlay anchored to it, including the touch
+  // controls) is a fixed 800x500 box. On a narrow or short screen that box would
+  // otherwise overflow and push things -- like the D-pad in its corner -- off
+  // screen. Scaling the whole box down (uniformly, so nothing gets distorted) to
+  // fit whichever of width/height is tighter keeps everything visible and in place.
+  const viewWrapEl = document.getElementById('viewWrap');
+  function fitToScreen() {
+    const scale = Math.min(window.innerWidth / 800, window.innerHeight / 500);
+    viewWrapEl.style.transform = `scale(${scale})`;
+  }
+  window.addEventListener('resize', fitToScreen);
+  window.addEventListener('orientationchange', fitToScreen);
+  fitToScreen();
 
   // ---------- On-screen touch controls ----------
   // Each button just drives the same keys[] map the keyboard uses, so update() doesn't
