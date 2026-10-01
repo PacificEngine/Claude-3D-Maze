@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D Maze</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; background: #000; overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+    height: 100%; width: 100%;
+  }
+  #wrap {
+    position: relative; width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas { display: block; background: #000; }
+  #view { image-rendering: pixelated; }
+  #hud {
+    position: absolute; top: 12px; left: 12px; color: #9fffb0;
+    text-shadow: 0 0 6px rgba(0,0,0,0.9);
+    font-size: 14px; line-height: 1.5; pointer-events: none;
+    user-select: none;
+  }
+  #minimap {
+    position: absolute; top: 12px; right: 12px;
+    background: rgba(0,0,0,0.55); border: 1px solid #3a5;
+    border-radius: 4px;
+  }
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: rgba(0,0,0,0.85); color: #dfffe6; z-index: 10;
+  }
+  #overlay h1 { font-size: 28px; margin: 0 0 10px; color: #7fffa0; letter-spacing: 2px; }
+  #overlay p { font-size: 14px; margin: 6px 0; color: #b8ffca; max-width: 480px; }
+  #overlay button {
+    margin-top: 18px; padding: 10px 22px; font-size: 15px; cursor: pointer;
+    background: #143a1f; color: #9fffb0; border: 1px solid #4a8; border-radius: 4px;
+    font-family: inherit;
+  }
+  #overlay button:hover { background: #1c5029; }
+  .hidden { display: none !important; }
+  #footer {
+    position: absolute; bottom: 10px; left: 0; right: 0; text-align: center;
+    color: #5a8a68; font-size: 12px; pointer-events: none; user-select: none;
+  }
+  #message {
+    position: absolute; top: 54px; left: 50%; transform: translateX(-50%);
+    color: #ffe4e4; background: rgba(90,10,10,0.8); padding: 8px 18px;
+    border: 1px solid #c55; border-radius: 6px; font-size: 15px;
+    opacity: 0; transition: opacity 0.4s ease; pointer-events: none;
+    white-space: nowrap; z-index: 5;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="view" width="800" height="500"></canvas>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="hud">
+    <div id="timer">Time: 0.0s</div>
+    <div id="caught">Caught: 0</div>
+    <div id="pos"></div>
+  </div>
+  <div id="message"></div>
+  <div id="footer">WASD / Arrows to move &amp; turn &middot; M toggles map &middot; R new maze &middot; avoid the rat!</div>
+  <div id="overlay">
+    <h1>3D MAZE</h1>
+    <p>Find your way through the brick corridors to the glowing exit &mdash; but watch out for
+       the rat scurrying around. If it catches you, you're sent straight back to the start.
+       Touch one of the gray polyhedral rocks and gravity flips: the floor becomes the ceiling
+       for a while.</p>
+    <p>W / &uarr; forward &nbsp; S / &darr; back &nbsp; A / &larr; turn left &nbsp; D / &rarr; turn right &nbsp; M minimap</p>
+    <button id="startBtn">Enter the Maze</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- Maze generation (recursive backtracker) ----------
+  function generateMaze(cols, rows) {
+    const W = cols * 2 + 1, H = rows * 2 + 1;
+    const grid = Array.from({length: H}, () => Array(W).fill(1));
+    const visited = Array.from({length: rows}, () => Array(cols).fill(false));
+    const cellToGrid = (cx, cy) => [cx * 2 + 1, cy * 2 + 1];
+    const stack = [[0, 0]];
+    visited[0][0] = true;
+    {
+      const [gx, gy] = cellToGrid(0, 0);
+      grid[gy][gx] = 0;
+    }
+    const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
+    while (stack.length) {
+      const [cx, cy] = stack[stack.length - 1];
+      const options = [];
+      for (const [dx, dy] of dirs) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx >= 0 && nx < cols && ny >= 0 && ny < rows && !visited[ny][nx]) {
+          options.push([nx, ny, dx, dy]);
+        }
+      }
+      if (!options.length) { stack.pop(); continue; }
+      const [nx, ny, dx, dy] = options[(Math.random() * options.length) | 0];
+      visited[ny][nx] = true;
+      const [gx, gy] = cellToGrid(cx, cy);
+      const [ngx, ngy] = cellToGrid(nx, ny);
+      grid[gy + dy][gx + dx] = 0;
+      grid[ngy][ngx] = 0;
+      stack.push([nx, ny]);
+    }
+    return grid;
+  }
+
+  // Knock down a random subset of the remaining interior walls so the maze isn't a
+  // strict spanning tree -- this creates loops/circular paths instead of exactly one
+  // route between any two points.
+  function addLoops(grid, cols, rows, chance) {
+    for (let cy = 0; cy < rows; cy++) {
+      for (let cx = 0; cx < cols; cx++) {
+        const gx = cx * 2 + 1, gy = cy * 2 + 1;
+        if (cx + 1 < cols) {
+          const wx = gx + 1, wy = gy;
+          if (grid[wy][wx] === 1 && Math.random() < chance) grid[wy][wx] = 0;
+        }
+        if (cy + 1 < rows) {
+          const wx = gx, wy = gy + 1;
+          if (grid[wy][wx] === 1 && Math.random() < chance) grid[wy][wx] = 0;
+        }
+      }
+    }
+  }
+
+  function isWallAt(grid, x, y) {
+    const gx = Math.floor(x), gy = Math.floor(y);
+    if (gy < 0 || gy >= grid.length || gx < 0 || gx >= grid[0].length) return true;
+    return grid[gy][gx] === 1;
+  }
+
+  // ---------- Game state ----------
+  const COLS = 15, ROWS = 15;
+  const DEFAULT_ANGLE = Math.PI / 4;
+  let grid, mapW, mapH;
+  let startGX, startGY, startX, startY, startAngle;
+  let exitGX, exitGY, exitX, exitY;
+  let px, py, pAngle;
+  let startTime = 0, elapsed = 0, won = false, running = false;
+  let showMap = false;
+  let exitBlockedMessageAt = 0;
+
+  // Game "mode" drives whether we're showing the first-person view or the top-down
+  // wall-rise/lower reveal animation. wallHeightFrac (0..1) parameterizes that reveal.
+  let mode = 'intro'; // 'intro' | 'playing' | 'win'
+  let wallHeightFrac = 0;
+  let modeAnimStart = 0;
+  const INTRO_DURATION = 2200;
+  const WIN_LOWER_DURATION = 1800;
+
+  // Death (rat-catch) screen shake + red flash.
+  let deathFlashStart = -1e9;
+  const DEATH_FLASH_DURATION = 500;
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  // Rat enemy state
+  let ratX, ratY, ratCX, ratCY, ratTargetCX, ratTargetCY;
+  let caughtCount = 0, invulnerableUntil = 0;
+  const RAT_SPEED = 1.9; // cells per second
+  const CATCH_RADIUS = 0.55;
+
+  // Gravity-flip rocks
+  let rocks = [];
+  let flipped = false;
+  let lastRockTouched = null;
+  const ROCK_COUNT = 5;
+  const ROCK_RADIUS = 0.5;
+
+  // Animated flip transition: flipDisplayScale rolls from +1 (normal) to -1 (upside down)
+  // or back, over FLIP_ANIM_MS, instead of snapping instantly.
+  const FLIP_ANIM_MS = 550;
+  let flipAnimFromScale = 1, flipAnimToScale = 1, flipAnimStartTime = -1e9;
+
+  function currentFlipScale(now) {
+    now = now || performance.now();
+    const t = Math.min(1, Math.max(0, (now - flipAnimStartTime) / FLIP_ANIM_MS));
+    const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // easeInOutQuad
+    return flipAnimFromScale + (flipAnimToScale - flipAnimFromScale) * eased;
+  }
+
+  function triggerFlipToggle() {
+    const now = performance.now();
+    flipAnimFromScale = currentFlipScale(now);
+    flipped = !flipped;
+    flipAnimToScale = flipped ? -1 : 1;
+    flipAnimStartTime = now;
+  }
+
+  function openNeighbors(cx, cy) {
+    const result = [];
+    for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0]]) {
+      const nx = cx + dx, ny = cy + dy;
+      if (ny >= 0 && ny < mapH && nx >= 0 && nx < mapW && grid[ny][nx] === 0) result.push([nx, ny]);
+    }
+    return result;
+  }
+
+  function bfsDistances(sx, sy) {
+    const dist = Array.from({ length: mapH }, () => Array(mapW).fill(-1));
+    dist[sy][sx] = 0;
+    const q = [[sx, sy]];
+    while (q.length) {
+      const [x, y] = q.shift();
+      for (const [nx, ny] of openNeighbors(x, y)) {
+        if (dist[ny][nx] === -1) { dist[ny][nx] = dist[y][x] + 1; q.push([nx, ny]); }
+      }
+    }
+    return dist;
+  }
+
+  function initRat() {
+    const dist = bfsDistances(startGX, startGY);
+    let maxD = 0;
+    for (let y = 0; y < mapH; y++) for (let x = 0; x < mapW; x++) if (dist[y][x] > maxD) maxD = dist[y][x];
+    const threshold = maxD * 0.5;
+    const candidates = [];
+    for (let y = 0; y < mapH; y++) {
+      for (let x = 0; x < mapW; x++) {
+        if (grid[y][x] === 0 && dist[y][x] >= threshold) candidates.push([x, y]);
+      }
+    }
+    const [cx, cy] = candidates.length ? candidates[(Math.random() * candidates.length) | 0] : [exitGX, exitGY];
+    ratCX = cx; ratCY = cy; ratX = cx + 0.5; ratY = cy + 0.5;
+    const neighbors = openNeighbors(cx, cy);
+    const [tx, ty] = neighbors.length ? neighbors[(Math.random() * neighbors.length) | 0] : [cx, cy];
+    ratTargetCX = tx; ratTargetCY = ty;
+  }
+
+  function updateRat(dt) {
+    const tx = ratTargetCX + 0.5, ty = ratTargetCY + 0.5;
+    const dx = tx - ratX, dy = ty - ratY;
+    const d = Math.hypot(dx, dy);
+    const step = RAT_SPEED * dt;
+    if (d <= step) {
+      ratX = tx; ratY = ty;
+      ratCX = ratTargetCX; ratCY = ratTargetCY;
+      const neighbors = openNeighbors(ratCX, ratCY);
+      if (neighbors.length) {
+        const [nx, ny] = neighbors[(Math.random() * neighbors.length) | 0];
+        ratTargetCX = nx; ratTargetCY = ny;
+      }
+    } else if (d > 0) {
+      ratX += (dx / d) * step;
+      ratY += (dy / d) * step;
+    }
+  }
+
+  function makeRockVerts(seed) {
+    const n = 7;
+    const verts = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const r = 0.7 + hash01(seed + i * 3.7, seed * 1.3 + i) * 0.35;
+      verts.push({ a, r });
+    }
+    return verts;
+  }
+
+  function initRocks() {
+    const dist = bfsDistances(startGX, startGY);
+    const candidates = [];
+    for (let y = 0; y < mapH; y++) {
+      for (let x = 0; x < mapW; x++) {
+        if (grid[y][x] === 0 && dist[y][x] >= 4 && !(x === exitGX && y === exitGY) &&
+            !(x === ratCX && y === ratCY) && !(x === startGX && y === startGY)) {
+          candidates.push([x, y]);
+        }
+      }
+    }
+    // shuffle then take the first ROCK_COUNT
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    }
+    rocks = candidates.slice(0, Math.min(ROCK_COUNT, candidates.length)).map(([x, y]) => {
+      const seed = x * 31 + y * 17;
+      return { x: x + 0.5, y: y + 0.5, verts: makeRockVerts(seed), shadeSeed: seed };
+    });
+  }
+
+  function newMaze() {
+    grid = generateMaze(COLS, ROWS);
+    addLoops(grid, COLS, ROWS, 0.15); // braid in some circular paths / shortcuts
+    mapH = grid.length; mapW = grid[0].length;
+
+    // Start can land on any room cell in the maze.
+    startGX = ((Math.random() * COLS) | 0) * 2 + 1;
+    startGY = ((Math.random() * ROWS) | 0) * 2 + 1;
+    startX = startGX + 0.5; startY = startGY + 0.5;
+
+    // Exit is any room cell reasonably far from start (by shortest path, loops included),
+    // so the maze stays a real challenge no matter where start landed.
+    const distFromStart = bfsDistances(startGX, startGY);
+    let maxD = 0;
+    for (let y = 0; y < mapH; y++) for (let x = 0; x < mapW; x++) if (distFromStart[y][x] > maxD) maxD = distFromStart[y][x];
+    const exitThreshold = Math.max(4, maxD * 0.5);
+    const exitCandidates = [];
+    for (let y = 0; y < mapH; y++) {
+      for (let x = 0; x < mapW; x++) {
+        if (grid[y][x] === 0 && distFromStart[y][x] >= exitThreshold) exitCandidates.push([x, y]);
+      }
+    }
+    const [egx, egy] = exitCandidates.length ? exitCandidates[(Math.random() * exitCandidates.length) | 0] : [mapW - 2, mapH - 2];
+    exitGX = egx; exitGY = egy;
+    exitX = egx + 0.5; exitY = egy + 0.5;
+
+    // Face the player down whichever corridor leads out of the start cell.
+    const startNeighbors = openNeighbors(startGX, startGY);
+    if (startNeighbors.length) {
+      const [nx, ny] = startNeighbors[(Math.random() * startNeighbors.length) | 0];
+      startAngle = Math.atan2(ny - startGY, nx - startGX);
+    } else {
+      startAngle = DEFAULT_ANGLE;
+    }
+
+    px = startX; py = startY;
+    pAngle = startAngle;
+
+    won = false;
+    caughtCount = 0;
+    invulnerableUntil = 0;
+    exitBlockedMessageAt = 0;
+    deathFlashStart = -1e9;
+    flipped = false;
+    lastRockTouched = null;
+    flipAnimFromScale = 1; flipAnimToScale = 1; flipAnimStartTime = -1e9;
+    initRat();
+    initRocks();
+    startTime = performance.now();
+
+    // Every new maze opens with the walls rising from the ground so you can see the
+    // whole layout from above before play begins.
+    mode = 'intro';
+    wallHeightFrac = 0;
+    modeAnimStart = performance.now();
+  }
+
+  // ---------- Input ----------
+  const keys = {};
+  window.addEventListener('keydown', (e) => {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key.toLowerCase() === 'm') showMap = !showMap;
+    if (e.key.toLowerCase() === 'r') newMaze();
+    if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault();
+  });
+  window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+  // ---------- Rendering ----------
+  const viewCanvas = document.getElementById('view');
+  const vctx = viewCanvas.getContext('2d');
+  const VW = viewCanvas.width, VH = viewCanvas.height;
+  const FOV = Math.PI / 3; // 60 degrees
+  const NUM_RAYS = VW; // one ray per column
+
+  // The raycast scene is always drawn in normal (right-side-up) orientation onto this
+  // offscreen canvas. The visible canvas then composites it with an animated vertical
+  // scale transform, so the gravity flip plays as a smooth roll rather than an instant
+  // pixel-buffer swap.
+  const sceneCanvas = document.createElement('canvas');
+  sceneCanvas.width = VW; sceneCanvas.height = VH;
+  const sctx = sceneCanvas.getContext('2d');
+
+  function castRay(angle) {
+    const rayDirX = Math.cos(angle), rayDirY = Math.sin(angle);
+    let mapX = Math.floor(px), mapY = Math.floor(py);
+    const deltaDistX = rayDirX === 0 ? 1e30 : Math.abs(1 / rayDirX);
+    const deltaDistY = rayDirY === 0 ? 1e30 : Math.abs(1 / rayDirY);
+
+    let stepX, sideDistX, stepY, sideDistY;
+    if (rayDirX < 0) { stepX = -1; sideDistX = (px - mapX) * deltaDistX; }
+    else { stepX = 1; sideDistX = (mapX + 1 - px) * deltaDistX; }
+    if (rayDirY < 0) { stepY = -1; sideDistY = (py - mapY) * deltaDistY; }
+    else { stepY = 1; sideDistY = (mapY + 1 - py) * deltaDistY; }
+
+    let side = 0, hit = false, guard = 0;
+    while (!hit && guard < 256) {
+      guard++;
+      if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; }
+      else { sideDistY += deltaDistY; mapY += stepY; side = 1; }
+      if (mapY < 0 || mapY >= mapH || mapX < 0 || mapX >= mapW || grid[mapY][mapX] === 1) hit = true;
+    }
+
+    let perpWallDist;
+    if (side === 0) perpWallDist = (mapX - px + (1 - stepX) / 2) / (rayDirX || 1e-9);
+    else perpWallDist = (mapY - py + (1 - stepY) / 2) / (rayDirY || 1e-9);
+
+    let wallX = side === 0 ? (py + perpWallDist * rayDirY) : (px + perpWallDist * rayDirX);
+    wallX -= Math.floor(wallX);
+
+    return { dist: Math.max(perpWallDist, 0.0001), side, mapX, mapY, wallX, rayDirX, rayDirY };
+  }
+
+  // Fixed "sky" clouds (world-space angle so they drift past as you turn, like the
+  // open-sky-above-stone-walls look of the old maze screensaver).
+  const CLOUDS = Array.from({ length: 10 }, (_, i) => ({
+    angle: (i / 10) * Math.PI * 2 + Math.random() * 0.4,
+    y: 26 + Math.random() * 55,
+    r: 18 + Math.random() * 22
+  }));
+  function normalizeAngle(a) {
+    a = a % (Math.PI * 2);
+    if (a > Math.PI) a -= Math.PI * 2;
+    if (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  }
+  function hash01(a, b) {
+    const s = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  const wallDist = new Float32Array(NUM_RAYS);
+
+  // Shared billboard projection: converts a world position into screen X + perpendicular
+  // distance, returning null if it's outside the FOV or hidden behind a nearer wall.
+  function projectSprite(wx, wy) {
+    const dx = wx - px, dy = wy - py;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.05) return null;
+    const angle = normalizeAngle(Math.atan2(dy, dx) - pAngle);
+    if (Math.abs(angle) > FOV / 2 + 0.15) return null;
+    const perpDist = d * Math.cos(angle);
+    if (perpDist <= 0.05) return null;
+    const screenX = (angle / FOV + 0.5) * VW;
+    const col = Math.max(0, Math.min(NUM_RAYS - 1, Math.round(screenX)));
+    if (perpDist > wallDist[col] - 0.05) return null; // hidden behind a wall
+    return { screenX, perpDist };
+  }
+
+  function drawExitMarker() {
+    const proj = projectSprite(exitX, exitY);
+    if (!proj) return;
+    const { screenX, perpDist } = proj;
+    const unitPixels = VH / perpDist;
+    const size = unitPixels * 0.42;
+    const bob = Math.sin(performance.now() / 450) * unitPixels * 0.12; // gentle floating bob
+    const baseY = VH / 2 + unitPixels / 2; // floor line at this distance
+    const centerY = baseY - unitPixels * 0.6 + bob; // hovers above the floor
+    const fog = Math.max(0.3, 1 - perpDist / 16);
+
+    sctx.save();
+    sctx.translate(screenX, centerY);
+    sctx.fillStyle = `rgba(${(255 * fog) | 0},${(221 * fog) | 0},${(40 * fog) | 0},1)`;
+    sctx.beginPath();
+    sctx.arc(0, 0, size, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.strokeStyle = `rgba(${(150 * fog) | 0},${(115 * fog) | 0},${(10 * fog) | 0},1)`;
+    sctx.lineWidth = Math.max(1, size * 0.06);
+    sctx.stroke();
+    sctx.fillStyle = `rgba(${(25 * fog) | 0},${(25 * fog) | 0},${(25 * fog) | 0},1)`;
+    sctx.beginPath();
+    sctx.arc(-size * 0.32, -size * 0.15, size * 0.11, 0, Math.PI * 2);
+    sctx.arc(size * 0.32, -size * 0.15, size * 0.11, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.strokeStyle = `rgba(${(25 * fog) | 0},${(25 * fog) | 0},${(25 * fog) | 0},1)`;
+    sctx.lineWidth = Math.max(1, size * 0.09);
+    sctx.beginPath();
+    sctx.arc(0, size * 0.05, size * 0.45, 0.15 * Math.PI, 0.85 * Math.PI);
+    sctx.stroke();
+    sctx.restore();
+  }
+
+  function drawStartMarker() {
+    const proj = projectSprite(startX, startY);
+    if (!proj) return;
+    const { screenX, perpDist } = proj;
+    const unitPixels = VH / perpDist;
+    const baseY = VH / 2 + unitPixels / 2; // floor line at this distance
+    const poleHeight = unitPixels * 0.9;
+    const poleTopY = baseY - poleHeight;
+    const flagW = unitPixels * 0.38;
+    const flagH = unitPixels * 0.3;
+    const fog = Math.max(0.3, 1 - perpDist / 16);
+
+    sctx.save();
+    sctx.translate(screenX, 0);
+    sctx.strokeStyle = `rgba(120,110,95,${fog})`;
+    sctx.lineWidth = Math.max(1, unitPixels * 0.035);
+    sctx.beginPath();
+    sctx.moveTo(0, baseY);
+    sctx.lineTo(0, poleTopY);
+    sctx.stroke();
+    sctx.fillStyle = `rgba(${(220 * fog) | 0},${(30 * fog) | 0},${(30 * fog) | 0},1)`;
+    sctx.beginPath();
+    sctx.moveTo(0, poleTopY);
+    sctx.lineTo(flagW, poleTopY + flagH * 0.5);
+    sctx.lineTo(0, poleTopY + flagH);
+    sctx.closePath();
+    sctx.fill();
+    sctx.restore();
+  }
+
+  function drawRat() {
+    const proj = projectSprite(ratX, ratY);
+    if (!proj) return;
+    const { screenX, perpDist } = proj;
+
+    const unitPixels = VH / perpDist;
+    const spriteH = unitPixels * 0.55;
+    const spriteW = spriteH * 1.3;
+    const baseY = VH / 2 + unitPixels / 2;
+    const bodyTop = baseY - spriteH;
+
+    sctx.save();
+    sctx.translate(screenX, 0);
+    sctx.fillStyle = '#5b4a42';
+    sctx.beginPath();
+    sctx.ellipse(0, bodyTop + spriteH * 0.55, spriteW * 0.5, spriteH * 0.4, 0, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.beginPath();
+    sctx.ellipse(spriteW * 0.32, bodyTop + spriteH * 0.32, spriteW * 0.28, spriteH * 0.28, 0, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.fillStyle = '#3f332d';
+    sctx.beginPath();
+    sctx.ellipse(spriteW * 0.24, bodyTop + spriteH * 0.1, spriteW * 0.12, spriteH * 0.14, 0, 0, Math.PI * 2);
+    sctx.ellipse(spriteW * 0.42, bodyTop + spriteH * 0.1, spriteW * 0.12, spriteH * 0.14, 0, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.fillStyle = '#e04040';
+    sctx.beginPath();
+    sctx.arc(spriteW * 0.42, bodyTop + spriteH * 0.32, Math.max(1, spriteH * 0.05), 0, Math.PI * 2);
+    sctx.fill();
+    sctx.strokeStyle = '#5b4a42';
+    sctx.lineWidth = Math.max(1, spriteH * 0.05);
+    sctx.beginPath();
+    sctx.moveTo(-spriteW * 0.5, bodyTop + spriteH * 0.75);
+    sctx.quadraticCurveTo(-spriteW * 0.95, bodyTop + spriteH * 0.5, -spriteW * 0.78, bodyTop + spriteH * 0.9);
+    sctx.stroke();
+    sctx.restore();
+  }
+
+  function drawRock(rock) {
+    const proj = projectSprite(rock.x, rock.y);
+    if (!proj) return;
+    const { screenX, perpDist } = proj;
+    const unitPixels = VH / perpDist;
+    const size = unitPixels * 0.4;
+    const baseY = VH / 2 + unitPixels / 2; // floor line at this distance
+    const centerY = baseY - size * 0.65;
+    const fog = Math.max(0.25, 1 - perpDist / 16);
+
+    sctx.save();
+    sctx.translate(screenX, centerY);
+    const n = rock.verts.length;
+    for (let i = 0; i < n; i++) {
+      const v1 = rock.verts[i], v2 = rock.verts[(i + 1) % n];
+      const x1 = Math.cos(v1.a) * size * v1.r, y1 = Math.sin(v1.a) * size * v1.r * 0.75;
+      const x2 = Math.cos(v2.a) * size * v2.r, y2 = Math.sin(v2.a) * size * v2.r * 0.75;
+      const faceShade = (90 + hash01(rock.shadeSeed + i, i * 2.1) * 70) * fog;
+      sctx.fillStyle = `rgb(${faceShade | 0},${faceShade | 0},${(faceShade * 1.05) | 0})`;
+      sctx.beginPath();
+      sctx.moveTo(0, 0);
+      sctx.lineTo(x1, y1);
+      sctx.lineTo(x2, y2);
+      sctx.closePath();
+      sctx.fill();
+      sctx.strokeStyle = `rgba(20,20,22,${0.55 * fog})`;
+      sctx.lineWidth = 1;
+      sctx.stroke();
+    }
+    sctx.restore();
+  }
+
+  function renderScene() {
+    // ---- sky ceiling with drifting clouds (drawn with normal canvas ops) ----
+    const grad = sctx.createLinearGradient(0, 0, 0, VH / 2);
+    grad.addColorStop(0, '#5fa8e0');
+    grad.addColorStop(1, '#cfeaf7');
+    sctx.fillStyle = grad;
+    sctx.fillRect(0, 0, VW, VH);
+
+    for (const c of CLOUDS) {
+      const diff = normalizeAngle(c.angle - pAngle);
+      if (Math.abs(diff) < FOV / 2 + 0.25) {
+        const sx = VW / 2 + (diff / (FOV / 2)) * (VW / 2);
+        sctx.fillStyle = 'rgba(255,255,255,0.9)';
+        sctx.beginPath();
+        sctx.ellipse(sx, c.y, c.r, c.r * 0.55, 0, 0, Math.PI * 2);
+        sctx.ellipse(sx - c.r * 0.55, c.y + 6, c.r * 0.6, c.r * 0.38, 0, 0, Math.PI * 2);
+        sctx.ellipse(sx + c.r * 0.55, c.y + 5, c.r * 0.55, c.r * 0.35, 0, 0, Math.PI * 2);
+        sctx.fill();
+      }
+    }
+
+    // ---- walls (stone blocks) + floor (checkerboard), written directly into pixel buffer ----
+    const imgData = sctx.getImageData(0, 0, VW, VH);
+    const data = imgData.data;
+    const blocksU = 2, blocksV = 3;
+
+    for (let i = 0; i < NUM_RAYS; i++) {
+      const rayAngle = pAngle - FOV / 2 + (i / NUM_RAYS) * FOV;
+      const { dist, side, mapX, mapY, wallX, rayDirX, rayDirY } = castRay(rayAngle);
+      wallDist[i] = dist;
+      // fullLineHeight/rawDrawStartFull describe the wall at true full height -- the brick
+      // texture is always anchored to this so it doesn't warp as the wall grows. drawEndFull
+      // (the floor line) never moves; only the visible top edge grows up from it, based on
+      // wallHeightFrac, so during the intro/win animations the wall looks like it's rising
+      // out of (or sinking into) the ground rather than the whole scene changing.
+      const fullLineHeight = Math.min(VH * 3, VH / dist);
+      const rawDrawStartFull = (VH - fullLineHeight) / 2;
+      const drawEndFull = (VH + fullLineHeight) / 2;
+      const visibleLineHeight = fullLineHeight * wallHeightFrac;
+      const rawDrawStart = drawEndFull - visibleLineHeight;
+      const drawEnd = Math.min(VH, Math.ceil(drawEndFull));
+      const drawStart = wallHeightFrac <= 0 ? drawEnd : Math.max(0, Math.floor(rawDrawStart));
+      const fog = Math.max(0, 1 - dist / 16);
+      const sideShade = side === 1 ? 0.72 : 1.0;
+      const texU = wallX * blocksU;
+
+      for (let y = drawStart; y < drawEnd; y++) {
+        const texV = ((y - rawDrawStartFull) / fullLineHeight) * blocksV;
+        const bv = Math.floor(texV);
+        // running-bond brick offset: shift every other course by half a brick
+        const shiftedU = texU + (bv % 2 === 0 ? 0 : 0.5);
+        const bu = Math.floor(shiftedU);
+        const fracU = shiftedU - bu, fracV = texV - bv;
+        const isMortar = fracU < 0.06 || fracU > 0.94 || fracV < 0.07 || fracV > 0.93;
+        const shade = hash01(bu, bv);
+        let r, g, b;
+        if (isMortar) {
+          r = 176; g = 168; b = 156; // light mortar/grout
+        } else {
+          r = 128 + shade * 42; // red brick, per-brick shade variation
+          g = 38 + shade * 18;
+          b = 32 + shade * 14;
+        }
+        r *= fog * sideShade; g *= fog * sideShade; b *= fog * sideShade;
+        const idx = (y * VW + i) * 4;
+        data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+      }
+
+      const floorStart = Math.max(drawEnd, Math.floor(VH / 2) + 1);
+      for (let y = floorStart; y < VH; y++) {
+        const p = y - VH / 2;
+        const rowDist = (VH / 2) / p;
+        const floorX = px + rowDist * rayDirX;
+        const floorY = py + rowDist * rayDirY;
+        const ffog = Math.max(0.12, 1 - rowDist / 16);
+        // wooden planks: seams running along X at each integer Y, subtle per-plank
+        // shade variation, and fine grain streaks along the plank length.
+        const plankIdx = Math.floor(floorY);
+        const plankSeam = floorY - plankIdx;
+        const plankShade = hash01(plankIdx, 7);
+        const grain = Math.sin(floorX * 30 + plankShade * 20) * 6;
+        let r = 120 + plankShade * 42 + grain;
+        let g = 80 + plankShade * 26 + grain * 0.7;
+        let b = 48 + plankShade * 16 + grain * 0.4;
+        if (plankSeam < 0.035 || plankSeam > 0.965) { r *= 0.5; g *= 0.5; b *= 0.5; }
+        r *= ffog; g *= ffog; b *= ffog;
+        const idx = (y * VW + i) * 4;
+        data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 255;
+      }
+    }
+
+    sctx.putImageData(imgData, 0, 0);
+
+    drawStartMarker();
+    drawExitMarker();
+    for (const rock of rocks) drawRock(rock);
+    drawRat();
+
+    // vignette (tinted purple while flipped, as a cue that gravity is upside down)
+    const vg = sctx.createRadialGradient(VW/2, VH/2, VH*0.25, VW/2, VH/2, VH*0.75);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, flipped ? 'rgba(70,0,60,0.5)' : 'rgba(0,0,0,0.4)');
+    sctx.fillStyle = vg;
+    sctx.fillRect(0, 0, VW, VH);
+  }
+
+  // Composite the (always normal-orientation) scene onto the visible canvas, applying
+  // the animated vertical-scale transform that produces the rolling flip effect, plus
+  // a screen shake when the death flash is active.
+  function render() {
+    renderScene();
+
+    const now = performance.now();
+    const scale = currentFlipScale(now);
+    const deathT = Math.min(1, Math.max(0, (now - deathFlashStart) / DEATH_FLASH_DURATION));
+    const shakeMag = deathT < 1 ? (1 - deathT) * 10 : 0;
+    const shakeX = shakeMag ? (Math.random() - 0.5) * 2 * shakeMag : 0;
+    const shakeY = shakeMag ? (Math.random() - 0.5) * 2 * shakeMag : 0;
+
+    vctx.clearRect(0, 0, VW, VH);
+    vctx.save();
+    vctx.translate(VW / 2 + shakeX, VH / 2 + shakeY);
+    vctx.scale(1, scale);
+    vctx.translate(-VW / 2, -VH / 2);
+    vctx.drawImage(sceneCanvas, 0, 0);
+    vctx.restore();
+
+    if (deathT < 1) {
+      vctx.fillStyle = `rgba(180,0,0,${(1 - deathT) * 0.45})`;
+      vctx.fillRect(0, 0, VW, VH);
+    }
+  }
+
+  function renderMinimap() {
+    const mm = document.getElementById('minimap');
+    if (showMap) mm.classList.remove('hidden'); else { mm.classList.add('hidden'); return; }
+    const mctx = mm.getContext('2d');
+    mctx.clearRect(0, 0, mm.width, mm.height);
+    const cell = Math.min(mm.width / mapW, mm.height / mapH);
+    for (let y = 0; y < mapH; y++) {
+      for (let x = 0; x < mapW; x++) {
+        mctx.fillStyle = grid[y][x] === 1 ? '#8a7d68' : '#171310';
+        mctx.fillRect(x * cell, y * cell, cell, cell);
+      }
+    }
+    mctx.fillStyle = '#3fff7a';
+    mctx.beginPath();
+    mctx.arc(exitX * cell, exitY * cell, cell * 0.9, 0, Math.PI * 2);
+    mctx.fill();
+    mctx.fillStyle = '#ff3333';
+    mctx.beginPath();
+    mctx.moveTo(startX * cell, (startY - 0.45) * cell);
+    mctx.lineTo((startX - 0.45) * cell, (startY + 0.4) * cell);
+    mctx.lineTo((startX + 0.45) * cell, (startY + 0.4) * cell);
+    mctx.closePath();
+    mctx.fill();
+    mctx.fillStyle = '#ff5555';
+    mctx.beginPath();
+    mctx.arc(ratX * cell, ratY * cell, cell * 0.7, 0, Math.PI * 2);
+    mctx.fill();
+    mctx.fillStyle = '#a8a8a8';
+    for (const rock of rocks) {
+      mctx.beginPath();
+      mctx.arc(rock.x * cell, rock.y * cell, cell * 0.6, 0, Math.PI * 2);
+      mctx.fill();
+    }
+    mctx.fillStyle = '#ffdf5f';
+    mctx.beginPath();
+    mctx.arc(px * cell, py * cell, cell * 0.7, 0, Math.PI * 2);
+    mctx.fill();
+    mctx.strokeStyle = '#ffdf5f';
+    mctx.beginPath();
+    mctx.moveTo(px * cell, py * cell);
+    mctx.lineTo((px + Math.cos(pAngle) * 1.6) * cell, (py + Math.sin(pAngle) * 1.6) * cell);
+    mctx.stroke();
+  }
+
+  // ---------- Update / movement ----------
+  const MOVE_SPEED = 2.6; // cells per second
+  const TURN_SPEED = 2.4; // radians per second
+  const RADIUS = 0.22;
+
+  function tryMove(nx, ny) {
+    if (!isWallAt(grid, nx + RADIUS * Math.sign(nx - px || 1) * 0, ny)) {}
+    // check against a small bounding box around the player
+    const checks = [
+      [nx - RADIUS, ny - RADIUS], [nx + RADIUS, ny - RADIUS],
+      [nx - RADIUS, ny + RADIUS], [nx + RADIUS, ny + RADIUS]
+    ];
+    for (const [cx, cy] of checks) {
+      if (isWallAt(grid, cx, cy)) return false;
+    }
+    return true;
+  }
+
+  function update(dt) {
+    const now0 = performance.now();
+
+    if (mode === 'intro') {
+      const t = Math.min(1, (now0 - modeAnimStart) / INTRO_DURATION);
+      wallHeightFrac = easeInOutCubic(t);
+      if (t >= 1) {
+        mode = 'playing';
+        startTime = performance.now(); // the on-screen timer starts once play actually begins
+      }
+      return;
+    }
+
+    if (mode === 'win') {
+      const t = Math.min(1, (now0 - modeAnimStart) / WIN_LOWER_DURATION);
+      wallHeightFrac = 1 - easeInOutCubic(t);
+      if (t >= 1) {
+        wallHeightFrac = 0;
+        showWinOverlay();
+      }
+      return;
+    }
+
+    let turn = 0;
+    if (keys['a'] || keys['arrowleft']) turn -= TURN_SPEED * dt;
+    if (keys['d'] || keys['arrowright']) turn += TURN_SPEED * dt;
+    pAngle += turn;
+
+    let move = 0;
+    if (keys['w'] || keys['arrowup']) move += MOVE_SPEED * dt;
+    if (keys['s'] || keys['arrowdown']) move -= MOVE_SPEED * dt;
+
+    if (move !== 0) {
+      const nx = px + Math.cos(pAngle) * move;
+      const ny = py + Math.sin(pAngle) * move;
+      if (tryMove(nx, py)) px = nx;
+      if (tryMove(px, ny)) py = ny;
+    }
+
+    updateRat(dt);
+
+    // The rat can't catch you while you're upside down.
+    if (!won && !flipped && performance.now() > invulnerableUntil) {
+      const rdx = px - ratX, rdy = py - ratY;
+      if (Math.hypot(rdx, rdy) < CATCH_RADIUS) {
+        caughtCount++;
+        deathFlashStart = performance.now();
+        px = startX; py = startY; pAngle = startAngle;
+        invulnerableUntil = performance.now() + 1200;
+        flashMessage('The rat got you! Back to the start...');
+      }
+    }
+
+    // Touching a rock flips gravity, but only a *different* rock than the last one
+    // touched flips it again -- standing near the same rock won't flip you back.
+    for (const rock of rocks) {
+      const rdx = px - rock.x, rdy = py - rock.y;
+      if (Math.hypot(rdx, rdy) < ROCK_RADIUS) {
+        if (rock !== lastRockTouched) {
+          lastRockTouched = rock;
+          triggerFlipToggle();
+          flashMessage(flipped ? 'Gravity flips! Up is down...' : 'Gravity flips back to normal!');
+        }
+        break;
+      }
+    }
+
+    if (!won) {
+      const dx = px - exitX, dy = py - exitY;
+      if (Math.sqrt(dx*dx + dy*dy) < 0.6) {
+        if (!flipped) {
+          won = true;
+          mode = 'win';
+          modeAnimStart = performance.now();
+          wallHeightFrac = 1;
+        } else {
+          const now = performance.now();
+          if (now - exitBlockedMessageAt > 2000) {
+            exitBlockedMessageAt = now;
+            flashMessage("You can't escape upside down! Flip back first.");
+          }
+        }
+      }
+    }
+  }
+
+  let messageTimeout = null;
+  function flashMessage(text) {
+    const el = document.getElementById('message');
+    el.textContent = text;
+    el.style.opacity = '1';
+    clearTimeout(messageTimeout);
+    messageTimeout = setTimeout(() => { el.style.opacity = '0'; }, 1500);
+  }
+
+  // ---------- Overlay / UI ----------
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const timerEl = document.getElementById('timer');
+  const caughtEl = document.getElementById('caught');
+
+  function showWinOverlay() {
+    running = false;
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = `
+      <h1>YOU ESCAPED!</h1>
+      <p>You found the exit in <strong>${elapsed.toFixed(1)}s</strong>.</p>
+      <button id="againBtn">New Maze</button>
+    `;
+    document.getElementById('againBtn').addEventListener('click', () => {
+      newMaze();
+      overlay.classList.add('hidden');
+      running = true;
+      lastTime = performance.now();
+      requestAnimationFrame(loop);
+    });
+  }
+
+  startBtn.addEventListener('click', () => {
+    newMaze();
+    overlay.classList.add('hidden');
+    running = true;
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  // ---------- Main loop ----------
+  let lastTime = 0;
+  function loop(t) {
+    if (!running) return;
+    const dt = Math.min(0.05, (t - lastTime) / 1000);
+    lastTime = t;
+    update(dt);
+    render();
+    renderMinimap();
+    elapsed = (performance.now() - startTime) / 1000;
+    timerEl.textContent = `Time: ${elapsed.toFixed(1)}s`;
+    caughtEl.textContent = `Caught: ${caughtCount}`;
+    requestAnimationFrame(loop);
+  }
+
+  // Prepare initial maze so minimap/render code has data even before start
+  newMaze();
+  render();
+  renderMinimap();
+})();
+</script>
+</body>
+</html>
