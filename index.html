@@ -51,6 +51,29 @@
     opacity: 0; transition: opacity 0.4s ease; pointer-events: none;
     white-space: nowrap; z-index: 5;
   }
+
+  /* On-screen touch controls: hidden by default, shown on touch devices. */
+  #touchControls {
+    display: none;
+    position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  }
+  @media (pointer: coarse) {
+    #touchControls { display: block; }
+  }
+  .touchGroup {
+    position: absolute; bottom: 18px; display: flex; gap: 10px;
+    pointer-events: auto;
+  }
+  #touchMove { left: 18px; flex-direction: column; }
+  #touchTurn { right: 18px; }
+  .touchBtn {
+    width: 60px; height: 60px; border-radius: 50%;
+    background: rgba(20,40,25,0.55); border: 1px solid rgba(159,255,176,0.6);
+    color: #cfffd8; font-size: 22px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .touchBtn:active, .touchBtn.pressed { background: rgba(60,120,70,0.75); }
 </style>
 </head>
 <body>
@@ -63,6 +86,16 @@
     <div id="pos"></div>
   </div>
   <div id="message"></div>
+  <div id="touchControls">
+    <div id="touchMove" class="touchGroup">
+      <button type="button" class="touchBtn" id="btnUp" aria-label="Forward">&#9650;</button>
+      <button type="button" class="touchBtn" id="btnDown" aria-label="Back">&#9660;</button>
+    </div>
+    <div id="touchTurn" class="touchGroup">
+      <button type="button" class="touchBtn" id="btnLeft" aria-label="Turn left">&#9664;</button>
+      <button type="button" class="touchBtn" id="btnRight" aria-label="Turn right">&#9654;</button>
+    </div>
+  </div>
   <div id="footer">WASD / Arrows to move &amp; turn &middot; M toggles map &middot; R new maze &middot; avoid the rat!</div>
   <div id="overlay">
     <h1>3D MAZE</h1>
@@ -356,6 +389,28 @@
     if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+  // ---------- On-screen touch controls ----------
+  // Each button just drives the same keys[] map the keyboard uses, so update() doesn't
+  // need to know the difference. touchcancel is handled too (finger sliding off the
+  // button, an alert popping up, etc.) so a key can never get stuck "held".
+  function bindTouchButton(id, key) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const press = (e) => { e.preventDefault(); keys[key] = true; el.classList.add('pressed'); };
+    const release = (e) => { if (e) e.preventDefault(); keys[key] = false; el.classList.remove('pressed'); };
+    el.addEventListener('touchstart', press, { passive: false });
+    el.addEventListener('touchend', release, { passive: false });
+    el.addEventListener('touchcancel', release, { passive: false });
+    // Also support mouse, so it's testable on desktop and works for hybrid devices.
+    el.addEventListener('mousedown', press);
+    el.addEventListener('mouseup', release);
+    el.addEventListener('mouseleave', release);
+  }
+  bindTouchButton('btnUp', 'w');
+  bindTouchButton('btnDown', 's');
+  bindTouchButton('btnLeft', 'a');
+  bindTouchButton('btnRight', 'd');
 
   // ---------- Rendering ----------
   const viewCanvas = document.getElementById('view');
